@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one or more
  * contributor license agreements. See the NOTICE file distributed with this
  * work for additional information regarding copyright ownership. The ASF
@@ -21,33 +21,33 @@ import org.apache.pig.data.DataByteArray;
 
 public class Utils {
 
-  public static Text objToText(Object o) {
-    return new Text(objToBytes(o));
-  }
-
-  public static byte[] objToBytes(Object o) {
-    if (o instanceof String) {
-      String str = (String) o;
-      return str.getBytes();
-    } else if (o instanceof Long) {
-      Long l = (Long) o;
-      return l.toString().getBytes();
-    } else if (o instanceof Integer) {
-      Integer l = (Integer) o;
-      return l.toString().getBytes();
-    } else if (o instanceof Boolean) {
-      Boolean l = (Boolean) o;
-      return l.toString().getBytes();
-    } else if (o instanceof Float) {
-      Float l = (Float) o;
-      return l.toString().getBytes();
-    } else if (o instanceof Double) {
-      Double l = (Double) o;
-      return l.toString().getBytes();
+    public static Text objToText(Object o) {
+        return new Text(objToBytes(o));
     }
 
-    // TODO: handle DataBag, Map<Object, Object>, and Tuple
+    public static byte[] objToBytes(Object o) {
+        if (o instanceof String) {
+            String str = (String) o;
+            return str.getBytes();
+        } else if (o instanceof Long) {
+            Long l = (Long) o;
+            return l.toString().getBytes();
+        } else if (o instanceof Integer) {
+            Integer l = (Integer) o;
+            return l.toString().getBytes();
+        } else if (o instanceof Boolean) {
+            Boolean l = (Boolean) o;
+            return l.toString().getBytes();
+        } else if (o instanceof Float) {
+            Float l = (Float) o;
+            return l.toString().getBytes();
+        } else if (o instanceof Double) {
+            Double l = (Double) o;
+            return l.toString().getBytes();
+        }
 
-    return ((DataByteArray) o).get();
-  }
+        // TODO: handle DataBag, Map<Object, Object>, and Tuple
+
+        return ((DataByteArray) o).get();
+    }
 }

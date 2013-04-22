@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one or more
  * contributor license agreements. See the NOTICE file distributed with this
  * work for additional information regarding copyright ownership. The ASF
@@ -30,46 +30,45 @@ import org.apache.pig.data.Tuple;
  */
 public class AccumuloBinaryConverter implements LoadCaster {
 
-  @Override
-  public Long bytesToLong(byte[] bytes) throws IOException {
-    throw new UnsupportedOperationException("Not supported yet.");
-  }
+    @Override
+    public Long bytesToLong(byte[] bytes) throws IOException {
+        throw new UnsupportedOperationException("Not supported yet.");
+    }
 
-  @Override
-  public Float bytesToFloat(byte[] bytes) throws IOException {
-    throw new UnsupportedOperationException("Not supported yet.");
-  }
+    @Override
+    public Float bytesToFloat(byte[] bytes) throws IOException {
+        throw new UnsupportedOperationException("Not supported yet.");
+    }
 
-  @Override
-  public Double bytesToDouble(byte[] bytes) throws IOException {
-    throw new UnsupportedOperationException("Not supported yet.");
-  }
+    @Override
+    public Double bytesToDouble(byte[] bytes) throws IOException {
+        throw new UnsupportedOperationException("Not supported yet.");
+    }
 
-  @Override
-  public Integer bytesToInteger(byte[] bytes) throws IOException {
-    throw new UnsupportedOperationException("Not supported yet.");
-  }
+    @Override
+    public Integer bytesToInteger(byte[] bytes) throws IOException {
+        throw new UnsupportedOperationException("Not supported yet.");
+    }
 
-  @Override
-  public String bytesToCharArray(byte[] bytes) throws IOException {
-    throw new UnsupportedOperationException("Not supported yet.");
-  }
+    @Override
+    public String bytesToCharArray(byte[] bytes) throws IOException {
+        throw new UnsupportedOperationException("Not supported yet.");
+    }
 
-  @Override
-  public Map<String, Object> bytesToMap(byte[] bytes) throws IOException {
-    throw new UnsupportedOperationException("Not supported yet.");
-  }
+    @Override
+    public Map<String, Object> bytesToMap(byte[] bytes) throws IOException {
+        throw new UnsupportedOperationException("Not supported yet.");
+    }
 
-  @Override
-  public Tuple bytesToTuple(byte[] bytes, ResourceFieldSchema rfs)
-          throws IOException {
-    throw new UnsupportedOperationException("Not supported yet.");
-  }
+    @Override
+    public Tuple bytesToTuple(byte[] bytes, ResourceFieldSchema rfs)
+            throws IOException {
+        throw new UnsupportedOperationException("Not supported yet.");
+    }
 
-  @Override
-  public DataBag bytesToBag(byte[] bytes, ResourceFieldSchema rfs)
-          throws IOException {
-    throw new UnsupportedOperationException("Not supported yet.");
-  }
-
+    @Override
+    public DataBag bytesToBag(byte[] bytes, ResourceFieldSchema rfs)
+            throws IOException {
+        throw new UnsupportedOperationException("Not supported yet.");
+    }
 }

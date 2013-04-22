@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one or more
  * contributor license agreements. See the NOTICE file distributed with this
  * work for additional information regarding copyright ownership. The ASF
@@ -75,495 +75,492 @@ public class AccumuloStorage
         extends LoadFunc
         implements LoadPushDown, OrderedLoadFunc, StoreFuncInterface {
 
-  private final static Log LOG = LogFactory.getLog(AccumuloStorage.class);
-  private final static Options validOptions = new Options();
-  private final static CommandLineParser parser = new GnuParser();
-  private final static String STRING_CASTER = "UTF8StorageConverter";
-  private final static String BYTE_CASTER = "AccumuloBinaryConverter";
-  private final static String CASTER_PROPERTY = "pig.accumulo.caster";
-  private final static String ASTERISK = "*";
-  private final static String COLON = ":";
-  private final static String ACCUMULO_CONFIG_SET = "accumulo.config.set";
+    private final static Log LOG = LogFactory.getLog(AccumuloStorage.class);
+    private final static Options validOptions = new Options();
+    private final static CommandLineParser parser = new GnuParser();
+    private final static String STRING_CASTER = "UTF8StorageConverter";
+    private final static String BYTE_CASTER = "AccumuloBinaryConverter";
+    private final static String CASTER_PROPERTY = "pig.accumulo.caster";
+    private final static String ASTERISK = "*";
+    private final static String COLON = ":";
+    private final static String ACCUMULO_CONFIG_SET = "accumulo.config.set";
 
-  static {
-    validOptions.addOption("loadKey", false, "Load Key");
-    validOptions.addOption("begin", true,
-                           "Records must be greater than this value ");
-    validOptions.addOption("end", true,
-                           "Records must be less than this value");
-    validOptions.addOption("isolation", false,
-                           "Enable isolation on the table");
-    validOptions.addOption("maxVersions", true,
-                           "Max Versions to export");
-    validOptions.addOption(
-            "minTimestamp", true,
-            "Record must have timestamp greater or equal to this value");
-    validOptions.addOption("maxTimestamp", true,
-                           "Record must have timestamp less then this value");
-    validOptions.addOption("timestamp", true,
-                           "Record must have timestamp equal to this value");
-    validOptions.addOption(
-            "caster", true,
-            "Caster to use for converting values. A class name, "
-            + "AccumuloBinaryConverter, or Utf8StorageConverter. "
-            + "For storage, casters must implement LoadStoreCaster.");
+    static {
+        validOptions.addOption("loadKey", false, "Load Key");
+        validOptions.addOption("begin", true,
+                               "Records must be greater than this value ");
+        validOptions.addOption("end", true,
+                               "Records must be less than this value");
+        validOptions.addOption("isolation", false,
+                               "Enable isolation on the table");
+        validOptions.addOption("maxVersions", true,
+                               "Max Versions to export");
+        validOptions.addOption(
+                "minTimestamp", true,
+                "Record must have timestamp greater or equal to this value");
+        validOptions.addOption("maxTimestamp", true,
+                               "Record must have timestamp less then this value");
+        validOptions.addOption("timestamp", true,
+                               "Record must have timestamp equal to this value");
+        validOptions.addOption(
+                "caster", true,
+                "Caster to use for converting values. A class name, "
+                + "AccumuloBinaryConverter, or Utf8StorageConverter. "
+                + "For storage, casters must implement LoadStoreCaster.");
 
-  }
+    }
+    private List<ColumnInfo> columnInfo;
+    private boolean loadRowKey;
+    private String contextSignature;
+    private ResourceSchema schema;
+    private RecordReader<Key, Value> reader;
+    private Object requiredFieldList;
+    // Immutable fields
+    private final CommandLine configuredOptions;
+    private final LoadCaster caster;
+    private final boolean isolation;
+    private final String delimiter;
+    private final long timestamp;
+    private final long maxTimestamp;
+    private final long minTimestamp;
+    private final int maxVersions;
 
-  private List<ColumnInfo> columnInfo;
-  private boolean loadRowKey;
-  private String contextSignature;
-  private ResourceSchema schema;
-  private RecordReader<Key, Value> reader;
-  private Object requiredFieldList;
-  // Immutable fields
-  private final CommandLine configuredOptions;
-  private final LoadCaster caster;
-  private final boolean isolation;
-  private final String delimiter;
-  private final long timestamp;
-  private final long maxTimestamp;
-  private final long minTimestamp;
-  private final int maxVersions;
-
-  public AccumuloStorage() throws ParseException, IOException {
-    this("", "");
-  }
-
-  public AccumuloStorage(String columnList) throws ParseException, IOException {
-    this(columnList, "");
-  }
-
-  public AccumuloStorage(String columnList, String optString)
-          throws ParseException, IOException {
-
-    String[] optsArr = optString.split(" ");
-    try {
-      configuredOptions = parser.parse(validOptions, optsArr);
-    } catch (ParseException e) {
-      HelpFormatter formatter = new HelpFormatter();
-      formatter.printHelp(
-              "[-loadKey] [-begin] [-end] [-isolation] [-delim] "
-              + "[-minTimestamp] [-maxTimestamp] [-timestamp]",
-              validOptions);
-      throw e;
+    public AccumuloStorage() throws ParseException, IOException {
+        this("", "");
     }
 
-    this.loadRowKey = configuredOptions.hasOption("loadKey");
-
-    this.delimiter = (configuredOptions.hasOption("delim"))
-            ? configuredOptions.getOptionValue("delim")
-            : ",";
-
-    this.isolation = configuredOptions.hasOption("isolation");
-
-    this.maxVersions = (configuredOptions.hasOption("maxVersions"))
-            ? Integer.parseInt(configuredOptions.getOptionValue("maxVersions"))
-            : 1;
-
-    columnInfo = parseColumnList(columnList, delimiter);
-
-    String defaultCaster = UDFContext.getUDFContext().getClientSystemProps()
-            .getProperty(CASTER_PROPERTY, STRING_CASTER);
-    String casterOption = configuredOptions.getOptionValue(
-            "caster", defaultCaster);
-    if (STRING_CASTER.equalsIgnoreCase(casterOption)) {
-      caster = new Utf8StorageConverter();
-    } else if (BYTE_CASTER.equalsIgnoreCase(casterOption)) {
-      caster = new AccumuloBinaryConverter();
-    } else {
-      try {
-        caster = (LoadCaster) PigContext.instantiateFuncFromSpec(casterOption);
-      } catch (ClassCastException e) {
-        LOG.error("Configured caster does not implement LoadCaster interface.");
-        throw new IOException(e);
-      } catch (RuntimeException e) {
-        LOG.error("Configured caster class not found.", e);
-        throw new IOException(e);
-      }
-    }
-    LOG.debug("Using caster " + caster.getClass());
-
-    if (configuredOptions.hasOption("minTimestamp")) {
-      minTimestamp = Long.parseLong(configuredOptions.getOptionValue(
-              "minTimestamp"));
-    } else {
-      minTimestamp = Long.MIN_VALUE;
+    public AccumuloStorage(String columnList) throws ParseException, IOException {
+        this(columnList, "");
     }
 
-    if (configuredOptions.hasOption("maxTimestamp")) {
-      maxTimestamp = Long.parseLong(configuredOptions.getOptionValue(
-              "maxTimestamp"));
-    } else {
-      maxTimestamp = Long.MAX_VALUE;
-    }
+    public AccumuloStorage(String columnList, String optString)
+            throws ParseException, IOException {
 
-    if (configuredOptions.hasOption("timestamp")) {
-      timestamp = Long.parseLong(
-              configuredOptions.getOptionValue("timestamp"));
-    } else {
-      timestamp = System.currentTimeMillis();
-    }
-
-  }
-
-  @Override
-  public void setLocation(String location, Job job) throws IOException {
-    job.getConfiguration().setBoolean("pig.noSplitCombination", true);
-
-    initializeJobConfig(job);
-
-    String tablename = location;
-    if (location.startsWith("accumulo://")) {
-      tablename = location.substring(11);
-    }
-
-    // Get accumulo connection information from job config
-    String user = job.getConfiguration().get("accumulo.user");
-    byte[] passwd = job.getConfiguration().get("accumulo.passwd").getBytes();
-    String authsStr = job.getConfiguration().get("accumulo.auths");
-    Authorizations auths = new Authorizations(authsStr.split(","));
-    String instance = job.getConfiguration().get("accumulo.instance");
-    String zookeepers = job.getConfiguration().get("accumulo.zookeepers");
-
-    AccumuloInputFormat.setZooKeeperInstance(job, instance, zookeepers);
-    AccumuloInputFormat.setInputInfo(job, user, passwd, tablename, auths);
-    AccumuloInputFormat.setIsolated(job, this.isolation);
-    AccumuloInputFormat.setMaxVersions(job, this.maxVersions);
-
-    if (configuredOptions.hasOption("begin")
-            || configuredOptions.hasOption("end")) {
-      String begin = configuredOptions.getOptionValue("begin");
-      String end = configuredOptions.getOptionValue("end");
-      Range range = new Range(begin, end);
-      AccumuloInputFormat.setRanges(job, Collections.singleton(range));
-    }
-
-    String projectedFields = getUDFProperties().getProperty(
-            projectedFieldsName());
-    if (projectedFields != null) {
-      // update columnInfo_
-      pushProjection((RequiredFieldList) ObjectSerializer.deserialize(
-              projectedFields));
-    }
-
-    Collection<Pair<Text, Text>> columnsToFetch = Lists.newArrayList();
-    if (!columnInfo.isEmpty()) {
-      for (ColumnInfo colInfo : columnInfo) {
-        if (colInfo.isColumnMap()) {
-          // Column Family only
-          Text cf = new Text(colInfo.getColumnFamily());
-          columnsToFetch.add(new Pair<Text, Text>(cf, null));
-        } else {
-          AccumuloInputFormat.setRegex(
-                  job,
-                  AccumuloInputFormat.RegexType.COLUMN_QUALIFIER,
-                  user);
-        }
-      }
-    }
-  }
-
-  /**
-   * @return <code> contextSignature + "_projectedFields" </code>
-   */
-  private String projectedFieldsName() {
-    return contextSignature + "_projectedFields";
-  }
-
-  @Override
-  public InputFormat getInputFormat() throws IOException {
-    return new AccumuloInputFormat();
-  }
-
-  @Override
-  public void prepareToRead(RecordReader reader, PigSplit ps)
-          throws IOException {
-    this.reader = reader;
-  }
-
-  @Override
-  public Tuple getNext() throws IOException {
-    throw new UnsupportedOperationException("Not supported yet.");
-  }
-
-  @Override
-  public List<OperatorSet> getFeatures() {
-    return Arrays.asList(LoadPushDown.OperatorSet.PROJECTION);
-  }
-
-  @Override
-  public RequiredFieldResponse pushProjection(
-          RequiredFieldList requiredFieldList) throws FrontendException {
-    // (row key is not a real column)
-    int colOffset = loadRowKey ? 1 : 0;
-
-    if (requiredFieldList == null) {
-      throw new FrontendException("RequiredFieldList is null");
-    }
-
-    if (requiredFieldList.getFields().size()
-            > (columnInfo.size() + colOffset)) {
-      throw new FrontendException("The list of columns to project from Accumulo"
-              + " is larger than AccumuloStorage is configured to load.");
-    }
-
-    List<RequiredField> requiredFields = requiredFieldList.getFields();
-    List<ColumnInfo> newColumns = Lists.newArrayListWithExpectedSize(
-            requiredFields.size());
-
-    if (this.requiredFieldList != null) {
-      // in addition to PIG, this is also called by this.setLocation().
-      LOG.debug("projection is already set. skipping.");
-      return new RequiredFieldResponse(true);
-    }
-
-    /* How projection is handled :
-     *  - pushProjection() is invoked by PIG on the front end
-     *  - pushProjection here both stores serialized projection in the
-     *    context and adjusts columnInfo_.
-     *  - setLocation() is invoked on the backend and it reads the
-     *    projection from context. setLocation invokes this method again
-     *    so that columnInfo_ is adjected.
-     */
-
-    // colOffset is the offset in our columnList that we need to apply
-    // to indexes we get from requiredFields
-
-    // projOffset is the offset to the requiredFieldList we need to apply when
-    // figuring out which columns to prune. (if key is pruned,
-    // we should skip row key's element in this list when trimming colList)
-    int projOffset = colOffset;
-    this.requiredFieldList = requiredFieldList;
-
-
-    // remember the projection
-    storeProjectedFieldNames(requiredFieldList);
-
-    if (loadRowKey && (requiredFields.size() < 1
-            || requiredFields.get(0).getIndex() != 0)) {
-      loadRowKey = false;
-      projOffset = 0;
-    }
-
-    for (int i = projOffset; i < requiredFields.size(); i++) {
-      int fieldIndex = requiredFields.get(i).getIndex();
-      newColumns.add(columnInfo.get(fieldIndex - colOffset));
-    }
-
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("pushProjection After Projection: loadRowKey is " + loadRowKey);
-      for (ColumnInfo colInfo : newColumns) {
-        LOG.debug("pushProjection -- col: " + colInfo);
-      }
-    }
-    setColumnInfoList(newColumns);
-    return new RequiredFieldResponse(true);
-  }
-
-  @Override
-  public WritableComparable<?> getSplitComparable(InputSplit is)
-          throws IOException {
-    return new WritableComparable<InputSplit>() {
-      RangeInputSplit tsplit = new RangeInputSplit();
-
-      @Override
-      public void readFields(DataInput in) throws IOException {
-        tsplit.readFields(in);
-      }
-
-      @Override
-      public void write(DataOutput out) throws IOException {
-        tsplit.write(out);
-      }
-
-      @Override
-      public int compareTo(InputSplit split) {
+        String[] optsArr = optString.split(" ");
         try {
-          Range range = (Range) RangeInputSplit.class.getField("range").get(
-                  tsplit);
-          Range range2 = (Range) RangeInputSplit.class.getField("range").get(
-                  split);
-          return range.compareTo(range2);
-        } catch (Exception ex) {
-          throw Throwables.propagate(ex);
+            configuredOptions = parser.parse(validOptions, optsArr);
+        } catch (ParseException e) {
+            HelpFormatter formatter = new HelpFormatter();
+            formatter.printHelp(
+                    "[-loadKey] [-begin] [-end] [-isolation] [-delim] "
+                    + "[-minTimestamp] [-maxTimestamp] [-timestamp]",
+                    validOptions);
+            throw e;
         }
-      }
-    };
-  }
 
-  @Override
-  public String relToAbsPathForStoreLocation(String location, Path curDir)
-          throws IOException {
-    return location;
-  }
+        this.loadRowKey = configuredOptions.hasOption("loadKey");
 
-  @Override
-  public OutputFormat getOutputFormat() throws IOException {
-    return new AccumuloOutputFormat();
-  }
+        this.delimiter = (configuredOptions.hasOption("delim"))
+                ? configuredOptions.getOptionValue("delim")
+                : ",";
 
-  @Override
-  public void setStoreLocation(String string, Job job) throws IOException {
-    throw new UnsupportedOperationException("Not supported yet.");
-  }
+        this.isolation = configuredOptions.hasOption("isolation");
 
-  @Override
-  public void checkSchema(ResourceSchema rs) throws IOException {
-    if (!(caster instanceof LoadStoreCaster)) {
-      LOG.error("Caster must implement LoadStoreCaster for writing to HBase.");
-      throw new IOException("Bad Caster " + caster.getClass());
-    }
-    schema = rs;
-    getUDFProperties().setProperty(contextSignature + "_schema",
-                                   ObjectSerializer.serialize(schema));
-  }
+        this.maxVersions = (configuredOptions.hasOption("maxVersions"))
+                ? Integer.parseInt(configuredOptions.getOptionValue("maxVersions"))
+                : 1;
 
-  @Override
-  public void prepareToWrite(RecordWriter writer) throws IOException {
-    throw new UnsupportedOperationException("Not supported yet.");
-  }
+        columnInfo = parseColumnList(columnList, delimiter);
 
-  @Override
-  public void putNext(Tuple tuple) throws IOException {
-    throw new UnsupportedOperationException("Not supported yet.");
-  }
-
-  @Override
-  public void setStoreFuncUDFContextSignature(String signature) {
-    this.contextSignature = signature;
-  }
-
-  @Override
-  public void cleanupOnFailure(String string, Job job) throws IOException {
-    throw new UnsupportedOperationException("Not supported yet.");
-  }
-
-  private void initializeJobConfig(Job job) {
-    Properties udfProps = getUDFProperties();
-    Configuration jobConf = job.getConfiguration();
-    if (udfProps.containsKey(ACCUMULO_CONFIG_SET)) {
-      for (Entry<Object, Object> entry : udfProps.entrySet()) {
-        jobConf.set((String) entry.getKey(), (String) entry.getValue());
-      }
-    } else {
-      Configuration hbaseConf = HBaseConfiguration.create();
-      for (Entry<String, String> entry : hbaseConf) {
-        // JobConf may have some conf overriding ones in hbase-site.xml
-        // So only copy hbase config not in job config to UDFContext
-        // Also avoids copying core-default.xml and core-site.xml
-        // props in hbaseConf to UDFContext which would be redundant.
-        if (jobConf.get(entry.getKey()) == null) {
-          udfProps.setProperty(entry.getKey(), entry.getValue());
-          jobConf.set(entry.getKey(), entry.getValue());
-        }
-      }
-      udfProps.setProperty(ACCUMULO_CONFIG_SET, "true");
-    }
-  }
-
-  private Properties getUDFProperties() {
-    return UDFContext.getUDFContext()
-            .getUDFProperties(this.getClass(), new String[]{contextSignature});
-  }
-
-  /**
-   *
-   * @param columnList
-   * @param delimiter
-   * @param ignoreWhitespace
-   * @return
-   */
-  private List<ColumnInfo> parseColumnList(String columnList,
-                                           String delimiter) {
-    List<ColumnInfo> colInfo = Lists.newArrayList();
-
-    // Default behavior is to allow combinations of spaces and delimiter
-    // which defaults to a comma. Setting to not ignore whitespace will
-    // include the whitespace in the columns names
-    String[] colNames = columnList.split(delimiter);
-
-    for (String colName : colNames) {
-      colInfo.add(new ColumnInfo(colName));
-    }
-
-    return colInfo;
-  }
-
-  private void storeProjectedFieldNames(RequiredFieldList requiredFieldList)
-          throws FrontendException {
-    try {
-      getUDFProperties().setProperty(projectedFieldsName(),
-                                     ObjectSerializer.serialize(
-              requiredFieldList));
-    } catch (IOException e) {
-      throw new FrontendException(e);
-    }
-  }
-
-  private void setColumnInfoList(List<ColumnInfo> newColumns) {
-    this.columnInfo = newColumns;
-  }
-
-  /**
-   * Class to encapsulate logic around which column names were specified in each
-   * position of the column list. Users can specify columns names in one of 4
-   * ways: 'Foo:', 'Foo:*', 'Foo:bar*' or 'Foo:bar'. The first 3 result in a Map
-   * being added to the tuple, while the last results in a scalar. The 3rd form
-   * results in a prefix-filtered Map.
-   */
-  public class ColumnInfo {
-
-    final String originalColumnName;  // always set
-    final String columnFamily; // always set
-    final String columnName; // set if it exists and doesn't contain '*'
-    final String columnPrefix; // set if contains a prefix followed by '*'
-
-    public ColumnInfo(String colName) {
-      originalColumnName = colName;
-      String[] cfAndColumn = colName.split(COLON, 2);
-
-      //CFs are byte[1] and columns are byte[2]
-      columnFamily = cfAndColumn[0];
-      if (cfAndColumn.length > 1
-              && cfAndColumn[1].length() > 0 && !ASTERISK.equals(cfAndColumn[1])) {
-        if (cfAndColumn[1].endsWith(ASTERISK)) {
-          columnPrefix = cfAndColumn[1].substring(
-                  0, cfAndColumn[1].length() - 1);
-          columnName = null;
+        String defaultCaster = UDFContext.getUDFContext().getClientSystemProps()
+                .getProperty(CASTER_PROPERTY, STRING_CASTER);
+        String casterOption = configuredOptions.getOptionValue(
+                "caster", defaultCaster);
+        if (STRING_CASTER.equalsIgnoreCase(casterOption)) {
+            caster = new Utf8StorageConverter();
+        } else if (BYTE_CASTER.equalsIgnoreCase(casterOption)) {
+            caster = new AccumuloBinaryConverter();
         } else {
-          columnName = cfAndColumn[1];
-          columnPrefix = null;
+            try {
+                caster = (LoadCaster) PigContext.instantiateFuncFromSpec(casterOption);
+            } catch (ClassCastException e) {
+                LOG.error("Configured caster does not implement LoadCaster interface.");
+                throw new IOException(e);
+            } catch (RuntimeException e) {
+                LOG.error("Configured caster class not found.", e);
+                throw new IOException(e);
+            }
         }
-      } else {
-        columnPrefix = null;
-        columnName = null;
-      }
-    }
+        LOG.debug("Using caster " + caster.getClass());
 
-    public String getColumnFamily() {
-      return columnFamily;
-    }
+        if (configuredOptions.hasOption("minTimestamp")) {
+            minTimestamp = Long.parseLong(configuredOptions.getOptionValue(
+                    "minTimestamp"));
+        } else {
+            minTimestamp = Long.MIN_VALUE;
+        }
 
-    public String getColumnName() {
-      return columnName;
-    }
+        if (configuredOptions.hasOption("maxTimestamp")) {
+            maxTimestamp = Long.parseLong(configuredOptions.getOptionValue(
+                    "maxTimestamp"));
+        } else {
+            maxTimestamp = Long.MAX_VALUE;
+        }
 
-    public String getColumnPrefix() {
-      return columnPrefix;
-    }
+        if (configuredOptions.hasOption("timestamp")) {
+            timestamp = Long.parseLong(
+                    configuredOptions.getOptionValue("timestamp"));
+        } else {
+            timestamp = System.currentTimeMillis();
+        }
 
-    public boolean isColumnMap() {
-      return columnName == null;
-    }
-
-    public boolean hasPrefixMatch(String qualifier) {
-      return qualifier.startsWith(columnPrefix);
     }
 
     @Override
-    public String toString() {
-      return originalColumnName;
+    public void setLocation(String location, Job job) throws IOException {
+        job.getConfiguration().setBoolean("pig.noSplitCombination", true);
+
+        initializeJobConfig(job);
+
+        String tablename = location;
+        if (location.startsWith("accumulo://")) {
+            tablename = location.substring(11);
+        }
+
+        // Get accumulo connection information from job config
+        String user = job.getConfiguration().get("accumulo.user");
+        byte[] passwd = job.getConfiguration().get("accumulo.passwd").getBytes();
+        String authsStr = job.getConfiguration().get("accumulo.auths");
+        Authorizations auths = new Authorizations(authsStr.split(","));
+        String instance = job.getConfiguration().get("accumulo.instance");
+        String zookeepers = job.getConfiguration().get("accumulo.zookeepers");
+
+        AccumuloInputFormat.setZooKeeperInstance(job, instance, zookeepers);
+        AccumuloInputFormat.setInputInfo(job, user, passwd, tablename, auths);
+        AccumuloInputFormat.setIsolated(job, this.isolation);
+        AccumuloInputFormat.setMaxVersions(job, this.maxVersions);
+
+        if (configuredOptions.hasOption("begin")
+                || configuredOptions.hasOption("end")) {
+            String begin = configuredOptions.getOptionValue("begin");
+            String end = configuredOptions.getOptionValue("end");
+            Range range = new Range(begin, end);
+            AccumuloInputFormat.setRanges(job, Collections.singleton(range));
+        }
+
+        String projectedFields = getUDFProperties().getProperty(
+                projectedFieldsName());
+        if (projectedFields != null) {
+            // update columnInfo_
+            pushProjection((RequiredFieldList) ObjectSerializer.deserialize(
+                    projectedFields));
+        }
+
+        Collection<Pair<Text, Text>> columnsToFetch = Lists.newArrayList();
+        if (!columnInfo.isEmpty()) {
+            for (ColumnInfo colInfo : columnInfo) {
+                if (colInfo.isColumnMap()) {
+                    // Column Family only
+                    Text cf = new Text(colInfo.getColumnFamily());
+                    columnsToFetch.add(new Pair<Text, Text>(cf, null));
+                } else {
+                    AccumuloInputFormat.setRegex(
+                            job,
+                            AccumuloInputFormat.RegexType.COLUMN_QUALIFIER,
+                            user);
+                }
+            }
+        }
     }
-  }
+
+    /**
+     * @return <code> contextSignature + "_projectedFields" </code>
+     */
+    private String projectedFieldsName() {
+        return contextSignature + "_projectedFields";
+    }
+
+    @Override
+    public InputFormat getInputFormat() throws IOException {
+        return new AccumuloInputFormat();
+    }
+
+    @Override
+    public void prepareToRead(RecordReader reader, PigSplit ps)
+            throws IOException {
+        this.reader = reader;
+    }
+
+    @Override
+    public Tuple getNext() throws IOException {
+        throw new UnsupportedOperationException("Not supported yet.");
+    }
+
+    @Override
+    public List<OperatorSet> getFeatures() {
+        return Arrays.asList(LoadPushDown.OperatorSet.PROJECTION);
+    }
+
+    @Override
+    public RequiredFieldResponse pushProjection(
+            RequiredFieldList requiredFieldList) throws FrontendException {
+        // (row key is not a real column)
+        int colOffset = loadRowKey ? 1 : 0;
+
+        if (requiredFieldList == null) {
+            throw new FrontendException("RequiredFieldList is null");
+        }
+
+        if (requiredFieldList.getFields().size()
+                > (columnInfo.size() + colOffset)) {
+            throw new FrontendException("The list of columns to project from Accumulo"
+                    + " is larger than AccumuloStorage is configured to load.");
+        }
+
+        List<RequiredField> requiredFields = requiredFieldList.getFields();
+        List<ColumnInfo> newColumns = Lists.newArrayListWithExpectedSize(
+                requiredFields.size());
+
+        if (this.requiredFieldList != null) {
+            // in addition to PIG, this is also called by this.setLocation().
+            LOG.debug("projection is already set. skipping.");
+            return new RequiredFieldResponse(true);
+        }
+
+        /* How projection is handled :
+         *  - pushProjection() is invoked by PIG on the front end
+         *  - pushProjection here both stores serialized projection in the
+         *    context and adjusts columnInfo_.
+         *  - setLocation() is invoked on the backend and it reads the
+         *    projection from context. setLocation invokes this method again
+         *    so that columnInfo_ is adjected.
+         */
+
+        // colOffset is the offset in our columnList that we need to apply
+        // to indexes we get from requiredFields
+
+        // projOffset is the offset to the requiredFieldList we need to apply when
+        // figuring out which columns to prune. (if key is pruned,
+        // we should skip row key's element in this list when trimming colList)
+        int projOffset = colOffset;
+        this.requiredFieldList = requiredFieldList;
+
+
+        // remember the projection
+        storeProjectedFieldNames(requiredFieldList);
+
+        if (loadRowKey && (requiredFields.size() < 1
+                || requiredFields.get(0).getIndex() != 0)) {
+            loadRowKey = false;
+            projOffset = 0;
+        }
+
+        for (int i = projOffset; i < requiredFields.size(); i++) {
+            int fieldIndex = requiredFields.get(i).getIndex();
+            newColumns.add(columnInfo.get(fieldIndex - colOffset));
+        }
+
+        if (LOG.isDebugEnabled()) {
+            LOG.debug("pushProjection After Projection: loadRowKey is " + loadRowKey);
+            for (ColumnInfo colInfo : newColumns) {
+                LOG.debug("pushProjection -- col: " + colInfo);
+            }
+        }
+        setColumnInfoList(newColumns);
+        return new RequiredFieldResponse(true);
+    }
+
+    @Override
+    public WritableComparable<?> getSplitComparable(InputSplit is)
+            throws IOException {
+        return new WritableComparable<InputSplit>() {
+            RangeInputSplit tsplit = new RangeInputSplit();
+
+            @Override
+            public void readFields(DataInput in) throws IOException {
+                tsplit.readFields(in);
+            }
+
+            @Override
+            public void write(DataOutput out) throws IOException {
+                tsplit.write(out);
+            }
+
+            @Override
+            public int compareTo(InputSplit split) {
+                try {
+                    Range range = (Range) RangeInputSplit.class.getField("range").get(
+                            tsplit);
+                    Range range2 = (Range) RangeInputSplit.class.getField("range").get(
+                            split);
+                    return range.compareTo(range2);
+                } catch (Exception ex) {
+                    throw Throwables.propagate(ex);
+                }
+            }
+        };
+    }
+
+    @Override
+    public String relToAbsPathForStoreLocation(String location, Path curDir)
+            throws IOException {
+        return location;
+    }
+
+    @Override
+    public OutputFormat getOutputFormat() throws IOException {
+        return new AccumuloOutputFormat();
+    }
+
+    @Override
+    public void setStoreLocation(String string, Job job) throws IOException {
+        throw new UnsupportedOperationException("Not supported yet.");
+    }
+
+    @Override
+    public void checkSchema(ResourceSchema rs) throws IOException {
+        if (!(caster instanceof LoadStoreCaster)) {
+            LOG.error("Caster must implement LoadStoreCaster for writing to HBase.");
+            throw new IOException("Bad Caster " + caster.getClass());
+        }
+        schema = rs;
+        getUDFProperties().setProperty(contextSignature + "_schema",
+                                       ObjectSerializer.serialize(schema));
+    }
+
+    @Override
+    public void prepareToWrite(RecordWriter writer) throws IOException {
+        throw new UnsupportedOperationException("Not supported yet.");
+    }
+
+    @Override
+    public void putNext(Tuple tuple) throws IOException {
+        throw new UnsupportedOperationException("Not supported yet.");
+    }
+
+    @Override
+    public void setStoreFuncUDFContextSignature(String signature) {
+        this.contextSignature = signature;
+    }
+
+    @Override
+    public void cleanupOnFailure(String string, Job job) throws IOException {
+        throw new UnsupportedOperationException("Not supported yet.");
+    }
+
+    private void initializeJobConfig(Job job) {
+        Properties udfProps = getUDFProperties();
+        Configuration jobConf = job.getConfiguration();
+        if (udfProps.containsKey(ACCUMULO_CONFIG_SET)) {
+            for (Entry<Object, Object> entry : udfProps.entrySet()) {
+                jobConf.set((String) entry.getKey(), (String) entry.getValue());
+            }
+        } else {
+            Configuration hbaseConf = HBaseConfiguration.create();
+            for (Entry<String, String> entry : hbaseConf) {
+                // JobConf may have some conf overriding ones in hbase-site.xml
+                // So only copy hbase config not in job config to UDFContext
+                // Also avoids copying core-default.xml and core-site.xml
+                // props in hbaseConf to UDFContext which would be redundant.
+                if (jobConf.get(entry.getKey()) == null) {
+                    udfProps.setProperty(entry.getKey(), entry.getValue());
+                    jobConf.set(entry.getKey(), entry.getValue());
+                }
+            }
+            udfProps.setProperty(ACCUMULO_CONFIG_SET, "true");
+        }
+    }
+
+    private Properties getUDFProperties() {
+        return UDFContext.getUDFContext()
+                .getUDFProperties(this.getClass(), new String[]{contextSignature});
+    }
+
+    /**
+     *
+     * @param columnList
+     * @param delimiter
+     * @param ignoreWhitespace
+     * @return
+     */
+    private List<ColumnInfo> parseColumnList(String columnList,
+                                             String delimiter) {
+        List<ColumnInfo> colInfo = Lists.newArrayList();
+
+        // Default behavior is to allow combinations of spaces and delimiter
+        // which defaults to a comma. Setting to not ignore whitespace will
+        // include the whitespace in the columns names
+        String[] colNames = columnList.split(delimiter);
+
+        for (String colName : colNames) {
+            colInfo.add(new ColumnInfo(colName));
+        }
+
+        return colInfo;
+    }
+
+    private void storeProjectedFieldNames(RequiredFieldList requiredFieldList)
+            throws FrontendException {
+        try {
+            getUDFProperties().setProperty(projectedFieldsName(),
+                                           ObjectSerializer.serialize(
+                    requiredFieldList));
+        } catch (IOException e) {
+            throw new FrontendException(e);
+        }
+    }
+
+    private void setColumnInfoList(List<ColumnInfo> newColumns) {
+        this.columnInfo = newColumns;
+    }
+
+    /**
+     * Class to encapsulate logic around which column names were specified in each position of the column list. Users
+     * can specify columns names in one of 4 ways: 'Foo:', 'Foo:*', 'Foo:bar*' or 'Foo:bar'. The first 3 result in a Map
+     * being added to the tuple, while the last results in a scalar. The 3rd form results in a prefix-filtered Map.
+     */
+    public class ColumnInfo {
+
+        final String originalColumnName;  // always set
+        final String columnFamily; // always set
+        final String columnName; // set if it exists and doesn't contain '*'
+        final String columnPrefix; // set if contains a prefix followed by '*'
+
+        public ColumnInfo(String colName) {
+            originalColumnName = colName;
+            String[] cfAndColumn = colName.split(COLON, 2);
+
+            //CFs are byte[1] and columns are byte[2]
+            columnFamily = cfAndColumn[0];
+            if (cfAndColumn.length > 1
+                    && cfAndColumn[1].length() > 0 && !ASTERISK.equals(cfAndColumn[1])) {
+                if (cfAndColumn[1].endsWith(ASTERISK)) {
+                    columnPrefix = cfAndColumn[1].substring(
+                            0, cfAndColumn[1].length() - 1);
+                    columnName = null;
+                } else {
+                    columnName = cfAndColumn[1];
+                    columnPrefix = null;
+                }
+            } else {
+                columnPrefix = null;
+                columnName = null;
+            }
+        }
+
+        public String getColumnFamily() {
+            return columnFamily;
+        }
+
+        public String getColumnName() {
+            return columnName;
+        }
+
+        public String getColumnPrefix() {
+            return columnPrefix;
+        }
+
+        public boolean isColumnMap() {
+            return columnName == null;
+        }
+
+        public boolean hasPrefixMatch(String qualifier) {
+            return qualifier.startsWith(columnPrefix);
+        }
+
+        @Override
+        public String toString() {
+            return originalColumnName;
+        }
+    }
 }
