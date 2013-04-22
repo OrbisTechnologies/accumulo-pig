@@ -27,9 +27,9 @@ import org.apache.pig.data.DataByteArray;
 import org.apache.pig.data.DefaultDataBag;
 import org.apache.pig.data.Tuple;
 
-import cloudbase.core.data.Key;
-import cloudbase.core.data.Value;
-import cloudbase.core.iterators.WholeRowIterator;
+import org.apache.accumulo.core.data.Key;
+import org.apache.accumulo.core.data.Value;
+import org.apache.accumulo.core.iterators.WholeRowIterator;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -42,6 +42,8 @@ public class TestUtils {
     Iterator<Entry<String, String>> expectedIter = expectedConf.iterator();
     while (expectedIter.hasNext()) {
       Entry<String, String> e = expectedIter.next();
+      System.out.println("Actual = " + actualConf.get(e.getKey()));
+      System.out.println("Expected = " + expectedConf.get(e.getKey()));
       assertEquals(actualConf.get(e.getKey()), expectedConf.get(e.getKey()));
     }
 
