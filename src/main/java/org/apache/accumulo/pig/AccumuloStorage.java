@@ -16,8 +16,10 @@
  */
 package org.apache.accumulo.pig;
 
-import com.google.common.base.Throwables;
 import com.google.common.collect.Lists;
+import com.google.common.collect.Maps;
+import com.google.common.collect.RowSortedTable;
+import com.google.common.collect.TreeBasedTable;
 
 import java.io.DataInput;
 import java.io.DataOutput;
@@ -26,17 +28,21 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Properties;
 
-import org.apache.accumulo.core.client.mapreduce.AccumuloInputFormat;
+import org.apache.accumulo.core.client.IteratorSetting;
 import org.apache.accumulo.core.client.mapreduce.AccumuloOutputFormat;
+import org.apache.accumulo.core.client.mapreduce.AccumuloRowInputFormat;
 import org.apache.accumulo.core.client.mapreduce.InputFormatBase.RangeInputSplit;
 import org.apache.accumulo.core.data.Key;
 import org.apache.accumulo.core.data.Range;
 import org.apache.accumulo.core.data.Value;
+import org.apache.accumulo.core.iterators.user.TimestampFilter;
 import org.apache.accumulo.core.security.Authorizations;
 import org.apache.accumulo.core.util.Pair;
+import org.apache.accumulo.core.util.PeekingIterator;
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.CommandLineParser;
 import org.apache.commons.cli.GnuParser;
@@ -47,7 +53,6 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.io.WritableComparable;
 import org.apache.hadoop.mapreduce.InputFormat;
@@ -65,14 +70,15 @@ import org.apache.pig.ResourceSchema;
 import org.apache.pig.StoreFuncInterface;
 import org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.PigSplit;
 import org.apache.pig.builtin.Utf8StorageConverter;
+import org.apache.pig.data.DataByteArray;
 import org.apache.pig.data.Tuple;
+import org.apache.pig.data.TupleFactory;
 import org.apache.pig.impl.PigContext;
 import org.apache.pig.impl.logicalLayer.FrontendException;
 import org.apache.pig.impl.util.ObjectSerializer;
 import org.apache.pig.impl.util.UDFContext;
 
-public class AccumuloStorage
-        extends LoadFunc
+public class AccumuloStorage extends LoadFunc
         implements LoadPushDown, OrderedLoadFunc, StoreFuncInterface {
 
     private final static Log LOG = LogFactory.getLog(AccumuloStorage.class);
@@ -113,17 +119,19 @@ public class AccumuloStorage
     private boolean loadRowKey;
     private String contextSignature;
     private ResourceSchema schema;
-    private RecordReader<Key, Value> reader;
+    private RecordReader<Text, PeekingIterator<Entry<Key, Value>>> reader;
+    private RecordWriter<Key, Value> writer;
+    private AccumuloOutputFormat outputFormat;
     private Object requiredFieldList;
     // Immutable fields
     private final CommandLine configuredOptions;
     private final LoadCaster caster;
     private final boolean isolation;
     private final String delimiter;
-    private final long timestamp;
     private final long maxTimestamp;
     private final long minTimestamp;
     private final int maxVersions;
+    private boolean jobConfInitialized;
 
     public AccumuloStorage() throws ParseException, IOException {
         this("", "");
@@ -152,7 +160,7 @@ public class AccumuloStorage
 
         this.delimiter = (configuredOptions.hasOption("delim"))
                 ? configuredOptions.getOptionValue("delim")
-                : ",";
+                : " ";
 
         this.isolation = configuredOptions.hasOption("isolation");
 
@@ -160,7 +168,7 @@ public class AccumuloStorage
                 ? Integer.parseInt(configuredOptions.getOptionValue("maxVersions"))
                 : 1;
 
-        columnInfo = parseColumnList(columnList, delimiter);
+        setColumnInfoList(parseColumnList(columnList, delimiter));
 
         String defaultCaster = UDFContext.getUDFContext().getClientSystemProps()
                 .getProperty(CASTER_PROPERTY, STRING_CASTER);
@@ -197,13 +205,6 @@ public class AccumuloStorage
             maxTimestamp = Long.MAX_VALUE;
         }
 
-        if (configuredOptions.hasOption("timestamp")) {
-            timestamp = Long.parseLong(
-                    configuredOptions.getOptionValue("timestamp"));
-        } else {
-            timestamp = System.currentTimeMillis();
-        }
-
     }
 
     @Override
@@ -225,17 +226,22 @@ public class AccumuloStorage
         String instance = job.getConfiguration().get("accumulo.instance");
         String zookeepers = job.getConfiguration().get("accumulo.zookeepers");
 
-        AccumuloInputFormat.setZooKeeperInstance(job, instance, zookeepers);
-        AccumuloInputFormat.setInputInfo(job, user, passwd, tablename, auths);
-        AccumuloInputFormat.setIsolated(job, this.isolation);
-        AccumuloInputFormat.setMaxVersions(job, this.maxVersions);
+        try {
+            AccumuloRowInputFormat.setZooKeeperInstance(job.getConfiguration(), instance, zookeepers);
+            AccumuloRowInputFormat.setInputInfo(job.getConfiguration(), user, passwd, tablename, auths);
+//            AccumuloRowInputFormat.setIsolated(job.getConfiguration(), this.isolation);
+//            AccumuloRowInputFormat.setMaxVersions(job.getConfiguration(), this.maxVersions);
+        } catch (IllegalStateException ex) {
+            // Accumulo is dumb!!
+            // Ignore
+        }
 
         if (configuredOptions.hasOption("begin")
                 || configuredOptions.hasOption("end")) {
             String begin = configuredOptions.getOptionValue("begin");
             String end = configuredOptions.getOptionValue("end");
             Range range = new Range(begin, end);
-            AccumuloInputFormat.setRanges(job, Collections.singleton(range));
+            AccumuloRowInputFormat.setRanges(job.getConfiguration(), Collections.singleton(range));
         }
 
         String projectedFields = getUDFProperties().getProperty(
@@ -254,13 +260,20 @@ public class AccumuloStorage
                     Text cf = new Text(colInfo.getColumnFamily());
                     columnsToFetch.add(new Pair<Text, Text>(cf, null));
                 } else {
-                    AccumuloInputFormat.setRegex(
-                            job,
-                            AccumuloInputFormat.RegexType.COLUMN_QUALIFIER,
-                            user);
+                    Text cf = new Text(colInfo.getColumnFamily());
+                    Text cq = new Text(colInfo.getColumnName());
+                    columnsToFetch.add(new Pair<Text, Text>(cf, cq));
                 }
             }
         }
+        AccumuloRowInputFormat.fetchColumns(job.getConfiguration(), columnsToFetch);
+
+        if (configuredOptions.hasOption("maxTimestamp") || configuredOptions.hasOption("minTimestamp")) {
+            IteratorSetting timeFilter = new IteratorSetting(1, TimestampFilter.class);
+            TimestampFilter.setRange(timeFilter, minTimestamp, maxTimestamp);
+            AccumuloRowInputFormat.addIterator(job.getConfiguration(), timeFilter);
+        }
+        // TODO Configure Column Qualifier Regex Filters
     }
 
     /**
@@ -272,7 +285,7 @@ public class AccumuloStorage
 
     @Override
     public InputFormat getInputFormat() throws IOException {
-        return new AccumuloInputFormat();
+        return new AccumuloRowInputFormat();
     }
 
     @Override
@@ -283,7 +296,64 @@ public class AccumuloStorage
 
     @Override
     public Tuple getNext() throws IOException {
-        throw new UnsupportedOperationException("Not supported yet.");
+        try {
+            if (reader.nextKeyValue()) {
+                Text currentKey = reader.getCurrentKey();
+                PeekingIterator<Entry<Key, Value>> currentValue = reader.getCurrentValue();
+
+                RowSortedTable<String, String, byte[]> row = TreeBasedTable.create();
+                while (currentValue.hasNext()) {
+                    Entry<Key, Value> next = currentValue.next();
+                    Key key = next.getKey();
+                    Value value = next.getValue();
+                    row.put(key.getColumnFamily().toString(), key.getColumnQualifier().toString(), value.get());
+                }
+
+                int tupleSize = columnInfo.size();
+                if (loadRowKey) {
+                    tupleSize++;
+                }
+                Tuple tuple = TupleFactory.getInstance().newTuple(tupleSize);
+
+                int startIndex = 0;
+                if (loadRowKey) {
+                    tuple.set(0, currentKey.toString());
+                    startIndex++;
+                }
+
+                for (int i = 0; i < columnInfo.size(); ++i) {
+                    int currentIndex = startIndex + i;
+
+                    ColumnInfo cinfo = columnInfo.get(i);
+                    if (cinfo.isColumnMap()) {
+                        // It's a column Family!
+                        Map<String, DataByteArray> cfMap = Maps.newHashMap();
+                        Map<String, byte[]> cfResults = row.row(cinfo.getColumnFamily());
+                        for (String qualifier : cfResults.keySet()) {
+                            // We need to check against the prefix filter to
+                            // see if this value should be included. We can't
+                            // just rely on the server-side filter, since a
+                            // user could specify multiple CF filters for the
+                            // same CF.
+                            if (cinfo.getColumnPrefix() == null || cinfo.hasPrefixMatch(qualifier)) {
+                                cfMap.put(qualifier, new DataByteArray(cfResults.get(qualifier)));
+                            }
+                            tuple.set(currentIndex, cfMap);
+                        }
+                    } else {
+                        // It's a column so set the value
+                        byte[] cell = row.get(cinfo.getColumnFamily(), cinfo.getColumnName());
+                        DataByteArray value = cell == null ? null : new DataByteArray(cell);
+                        tuple.set(currentIndex, value);
+                    }
+                }
+                return tuple;
+            }
+
+            return null;
+        } catch (InterruptedException e) {
+            throw new IOException(e);
+        }
     }
 
     @Override
@@ -323,7 +393,7 @@ public class AccumuloStorage
          *    context and adjusts columnInfo_.
          *  - setLocation() is invoked on the backend and it reads the
          *    projection from context. setLocation invokes this method again
-         *    so that columnInfo_ is adjected.
+         *    so that columnInfo_ is adjusted.
          */
 
         // colOffset is the offset in our columnList that we need to apply
@@ -378,15 +448,10 @@ public class AccumuloStorage
 
             @Override
             public int compareTo(InputSplit split) {
-                try {
-                    Range range = (Range) RangeInputSplit.class.getField("range").get(
-                            tsplit);
-                    Range range2 = (Range) RangeInputSplit.class.getField("range").get(
-                            split);
-                    return range.compareTo(range2);
-                } catch (Exception ex) {
-                    throw Throwables.propagate(ex);
-                }
+                Range range = tsplit.getRange();
+                Range range2 = ((RangeInputSplit) split).getRange();
+
+                return range.compareTo(range2);
             }
         };
     }
@@ -399,12 +464,38 @@ public class AccumuloStorage
 
     @Override
     public OutputFormat getOutputFormat() throws IOException {
-        return new AccumuloOutputFormat();
+        if (this.outputFormat == null) {
+            if (this.jobConfInitialized) {
+                this.outputFormat = new AccumuloOutputFormat();
+            } else {
+                throw new IllegalStateException("setStoreLocation has not been called");
+            }
+        }
+        return outputFormat;
     }
 
     @Override
-    public void setStoreLocation(String string, Job job) throws IOException {
-        throw new UnsupportedOperationException("Not supported yet.");
+    public void setStoreLocation(String location, Job job) throws IOException {
+        String tablename = location;
+        if (location.startsWith("accumulo://")) {
+            tablename = location.substring(11);
+        }
+
+        // Get accumulo connection information from job config
+        String user = job.getConfiguration().get("accumulo.user");
+        byte[] passwd = job.getConfiguration().get("accumulo.passwd").getBytes();
+        String instance = job.getConfiguration().get("accumulo.instance");
+        String zookeepers = job.getConfiguration().get("accumulo.zookeepers");
+
+        AccumuloOutputFormat.setZooKeeperInstance(job.getConfiguration(), instance, zookeepers);
+        AccumuloOutputFormat.setOutputInfo(job.getConfiguration(), user, passwd, false, tablename);
+
+        String serializedSchema = getUDFProperties().getProperty(contextSignature + "_schema");
+        if (serializedSchema != null) {
+            schema = (ResourceSchema) ObjectSerializer.deserialize(serializedSchema);
+        }
+
+        initializeJobConfig(job);
     }
 
     @Override
@@ -414,18 +505,20 @@ public class AccumuloStorage
             throw new IOException("Bad Caster " + caster.getClass());
         }
         schema = rs;
+        System.out.println("Check schema called!!");
         getUDFProperties().setProperty(contextSignature + "_schema",
                                        ObjectSerializer.serialize(schema));
     }
 
     @Override
     public void prepareToWrite(RecordWriter writer) throws IOException {
-        throw new UnsupportedOperationException("Not supported yet.");
+        this.writer = writer;
     }
 
     @Override
     public void putNext(Tuple tuple) throws IOException {
-        throw new UnsupportedOperationException("Not supported yet.");
+        // TODO Implement Writes!
+        throw new UnsupportedOperationException("TODO Implement this method");
     }
 
     @Override
@@ -435,30 +528,15 @@ public class AccumuloStorage
 
     @Override
     public void cleanupOnFailure(String string, Job job) throws IOException {
-        throw new UnsupportedOperationException("Not supported yet.");
     }
 
     private void initializeJobConfig(Job job) {
         Properties udfProps = getUDFProperties();
         Configuration jobConf = job.getConfiguration();
-        if (udfProps.containsKey(ACCUMULO_CONFIG_SET)) {
-            for (Entry<Object, Object> entry : udfProps.entrySet()) {
-                jobConf.set((String) entry.getKey(), (String) entry.getValue());
-            }
-        } else {
-            Configuration hbaseConf = HBaseConfiguration.create();
-            for (Entry<String, String> entry : hbaseConf) {
-                // JobConf may have some conf overriding ones in hbase-site.xml
-                // So only copy hbase config not in job config to UDFContext
-                // Also avoids copying core-default.xml and core-site.xml
-                // props in hbaseConf to UDFContext which would be redundant.
-                if (jobConf.get(entry.getKey()) == null) {
-                    udfProps.setProperty(entry.getKey(), entry.getValue());
-                    jobConf.set(entry.getKey(), entry.getValue());
-                }
-            }
-            udfProps.setProperty(ACCUMULO_CONFIG_SET, "true");
+        for (Entry<Object, Object> entry : udfProps.entrySet()) {
+            jobConf.set((String) entry.getKey(), (String) entry.getValue());
         }
+        this.jobConfInitialized = true;
     }
 
     private Properties getUDFProperties() {
@@ -502,6 +580,11 @@ public class AccumuloStorage
 
     private void setColumnInfoList(List<ColumnInfo> newColumns) {
         this.columnInfo = newColumns;
+    }
+
+    @Override
+    public void setUDFContextSignature(String signature) {
+        this.contextSignature = signature;
     }
 
     /**
@@ -550,6 +633,11 @@ public class AccumuloStorage
             return columnPrefix;
         }
 
+        /**
+         * Returns whether there is a Column Qualifier or not.
+         *
+         * @return true if exporting the entire column family
+         */
         public boolean isColumnMap() {
             return columnName == null;
         }

@@ -22,7 +22,7 @@
     <groupId>com.orbis.accumulo</groupId>
     <artifactId>accumulo-pig</artifactId>
     <packaging>jar</packaging>
-    <version>1.4.3</version>
+    <version>1.4.3+0.8.1-cdh3u4</version>
     <name>Accumulo PigStorage</name>
 
     <dependencies>
@@ -32,9 +32,14 @@
             <version>1.2.16</version>
         </dependency>
         <dependency>
+            <groupId>com.google.guava</groupId>
+            <artifactId>guava</artifactId>
+            <version>13.0.1</version>
+        </dependency>
+        <dependency>
             <groupId>org.apache.hadoop</groupId>
             <artifactId>hadoop-core</artifactId>
-            <version>0.20.2-cdh3u5</version>
+            <version>0.20.2-cdh3u4</version>
         </dependency>
         <dependency>
             <groupId>org.apache.pig</groupId>

@@ -1,0 +1,35 @@
+package org.apache.accumulo.pig;
+
+import java.io.IOException;
+import java.util.Map;
+import java.util.Map.Entry;
+
+import org.apache.pig.EvalFunc;
+import org.apache.pig.data.BagFactory;
+import org.apache.pig.data.DataBag;
+import org.apache.pig.data.Tuple;
+import org.apache.pig.data.TupleFactory;
+
+/**
+ *
+ * @author pgollakota
+ */
+public class MapToBag extends EvalFunc<DataBag> {
+
+    @Override
+    public DataBag exec(Tuple input) throws IOException {
+        @SuppressWarnings("unchecked")
+        Map<String, Object> map = (Map<String, Object>) input.get(0);
+        DataBag bag = null;
+        if (map != null) {
+            bag = BagFactory.getInstance().newDefaultBag();
+            for (Entry<String, Object> entry : map.entrySet()) {
+                Tuple tuple = TupleFactory.getInstance().newTuple(2);
+                tuple.set(0, entry.getKey());
+                tuple.set(1, entry.getValue());
+                bag.add(tuple);
+            }
+        }
+        return bag;
+    }
+}
