@@ -501,7 +501,7 @@ public class AccumuloStorage extends LoadFunc
     @Override
     public void checkSchema(ResourceSchema rs) throws IOException {
         if (!(caster instanceof LoadStoreCaster)) {
-            LOG.error("Caster must implement LoadStoreCaster for writing to HBase.");
+            LOG.error("Caster must implement LoadStoreCaster for writing to Accumulo.");
             throw new IOException("Bad Caster " + caster.getClass());
         }
         schema = rs;
