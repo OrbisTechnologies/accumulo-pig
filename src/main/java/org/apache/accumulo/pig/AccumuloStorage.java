@@ -37,6 +37,7 @@ import org.apache.accumulo.core.client.mapreduce.AccumuloOutputFormat;
 import org.apache.accumulo.core.client.mapreduce.AccumuloRowInputFormat;
 import org.apache.accumulo.core.client.mapreduce.InputFormatBase.RangeInputSplit;
 import org.apache.accumulo.core.data.Key;
+import org.apache.accumulo.core.data.Mutation;
 import org.apache.accumulo.core.data.Range;
 import org.apache.accumulo.core.data.Value;
 import org.apache.accumulo.core.iterators.user.TimestampFilter;
@@ -67,10 +68,13 @@ import org.apache.pig.LoadPushDown;
 import org.apache.pig.LoadStoreCaster;
 import org.apache.pig.OrderedLoadFunc;
 import org.apache.pig.ResourceSchema;
+import org.apache.pig.ResourceSchema.ResourceFieldSchema;
 import org.apache.pig.StoreFuncInterface;
 import org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.PigSplit;
 import org.apache.pig.builtin.Utf8StorageConverter;
+import org.apache.pig.data.DataBag;
 import org.apache.pig.data.DataByteArray;
+import org.apache.pig.data.DataType;
 import org.apache.pig.data.Tuple;
 import org.apache.pig.data.TupleFactory;
 import org.apache.pig.impl.PigContext;
@@ -120,7 +124,7 @@ public class AccumuloStorage extends LoadFunc
     private String contextSignature;
     private ResourceSchema schema;
     private RecordReader<Text, PeekingIterator<Entry<Key, Value>>> reader;
-    private RecordWriter<Key, Value> writer;
+    private RecordWriter<Text, Mutation> writer;
     private AccumuloOutputFormat outputFormat;
     private Object requiredFieldList;
     // Immutable fields
@@ -362,8 +366,7 @@ public class AccumuloStorage extends LoadFunc
     }
 
     @Override
-    public RequiredFieldResponse pushProjection(
-            RequiredFieldList requiredFieldList) throws FrontendException {
+    public RequiredFieldResponse pushProjection(RequiredFieldList requiredFieldList) throws FrontendException {
         // (row key is not a real column)
         int colOffset = loadRowKey ? 1 : 0;
 
@@ -487,8 +490,13 @@ public class AccumuloStorage extends LoadFunc
         String instance = job.getConfiguration().get("accumulo.instance");
         String zookeepers = job.getConfiguration().get("accumulo.zookeepers");
 
-        AccumuloOutputFormat.setZooKeeperInstance(job.getConfiguration(), instance, zookeepers);
-        AccumuloOutputFormat.setOutputInfo(job.getConfiguration(), user, passwd, false, tablename);
+        try {
+            AccumuloOutputFormat.setZooKeeperInstance(job.getConfiguration(), instance, zookeepers);
+            AccumuloOutputFormat.setOutputInfo(job.getConfiguration(), user, passwd, false, tablename);
+        } catch (IllegalStateException ex) {
+            // Accumulo is dumb!
+            // Ignore
+        }
 
         String serializedSchema = getUDFProperties().getProperty(contextSignature + "_schema");
         if (serializedSchema != null) {
@@ -505,7 +513,6 @@ public class AccumuloStorage extends LoadFunc
             throw new IOException("Bad Caster " + caster.getClass());
         }
         schema = rs;
-        System.out.println("Check schema called!!");
         getUDFProperties().setProperty(contextSignature + "_schema",
                                        ObjectSerializer.serialize(schema));
     }
@@ -517,8 +524,35 @@ public class AccumuloStorage extends LoadFunc
 
     @Override
     public void putNext(Tuple tuple) throws IOException {
-        // TODO Implement Writes!
-        throw new UnsupportedOperationException("TODO Implement this method");
+        final ResourceFieldSchema[] fieldSchemas = (schema == null) ? null : schema.getFields();
+        final byte type = (fieldSchemas == null) ? DataType.findType(tuple.get(0)) : fieldSchemas[0].getType();
+        final long ts = System.currentTimeMillis();
+
+        final Mutation mutation = createMutation(tuple.get(0), type);
+        for (int i = 1; i < tuple.size(); i++) {
+            final byte thisType = (fieldSchemas == null) ? DataType.findType(tuple.get(i)) : fieldSchemas[i].getType();
+            final ColumnInfo thisCol = columnInfo.get(i - 1);
+            if (!thisCol.isColumnMap()) {
+                final String cf = thisCol.getColumnFamily();
+                final String cq = thisCol.getColumnName();
+                final Value value = new Value(objToBytes(tuple.get(i), thisType));
+                mutation.put(cf, cq, ts, value);
+            } else {
+                Map<String, Object> cfMap = (Map<String, Object>) tuple.get(i);
+                for (Entry<String, Object> entry : cfMap.entrySet()) {
+                    final String cq = entry.getKey();
+                    final Object vobject = entry.getValue();
+                    Value value = new Value(objToBytes(vobject, DataType.findType(vobject)));
+                    mutation.put(thisCol.getColumnFamily(), cq, ts, value);
+                }
+            }
+        }
+
+        try {
+            writer.write(null, mutation);
+        } catch (InterruptedException ex) {
+            throw new IOException(ex);
+        }
     }
 
     @Override
@@ -585,6 +619,46 @@ public class AccumuloStorage extends LoadFunc
     @Override
     public void setUDFContextSignature(String signature) {
         this.contextSignature = signature;
+    }
+
+    private Mutation createMutation(Object key, byte type) throws IOException {
+        return new Mutation(new Text(objToBytes(key, type)));
+    }
+
+    @SuppressWarnings("unchecked")
+    private byte[] objToBytes(Object o, byte type) throws IOException {
+        LoadStoreCaster localCaster = (LoadStoreCaster) this.caster;
+        if (o == null) {
+            return null;
+        }
+        switch (type) {
+            case DataType.BYTEARRAY:
+                return ((DataByteArray) o).get();
+            case DataType.BAG:
+                return localCaster.toBytes((DataBag) o);
+            case DataType.CHARARRAY:
+                return localCaster.toBytes((String) o);
+            case DataType.DOUBLE:
+                return localCaster.toBytes((Double) o);
+            case DataType.FLOAT:
+                return localCaster.toBytes((Float) o);
+            case DataType.INTEGER:
+                return localCaster.toBytes((Integer) o);
+            case DataType.LONG:
+                return localCaster.toBytes((Long) o);
+            // The type conversion here is unchecked.
+            // Relying on DataType.findType to do the right thing.
+            case DataType.MAP:
+                return localCaster.toBytes((Map<String, Object>) o);
+            case DataType.NULL:
+                return null;
+            case DataType.TUPLE:
+                return localCaster.toBytes((Tuple) o);
+            case DataType.ERROR:
+                throw new IOException("Unable to determine type of " + o.getClass());
+            default:
+                throw new IOException("Unable to find a converter for tuple field " + o);
+        }
     }
 
     /**
