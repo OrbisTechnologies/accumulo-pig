@@ -42,6 +42,7 @@ import org.apache.accumulo.core.data.Range;
 import org.apache.accumulo.core.data.Value;
 import org.apache.accumulo.core.iterators.user.TimestampFilter;
 import org.apache.accumulo.core.security.Authorizations;
+import org.apache.accumulo.core.security.ColumnVisibility;
 import org.apache.accumulo.core.util.Pair;
 import org.apache.accumulo.core.util.PeekingIterator;
 import org.apache.commons.cli.CommandLine;
@@ -529,21 +530,23 @@ public class AccumuloStorage extends LoadFunc
         final long ts = System.currentTimeMillis();
 
         final Mutation mutation = createMutation(tuple.get(0), type);
-        for (int i = 1; i < tuple.size(); i++) {
+        String visString = (String) tuple.get(1);
+        ColumnVisibility vis = new ColumnVisibility(visString);
+        for (int i = 2; i < tuple.size(); i++) {
             final byte thisType = (fieldSchemas == null) ? DataType.findType(tuple.get(i)) : fieldSchemas[i].getType();
-            final ColumnInfo thisCol = columnInfo.get(i - 1);
+            final ColumnInfo thisCol = columnInfo.get(i - 2);
             if (!thisCol.isColumnMap()) {
                 final String cf = thisCol.getColumnFamily();
                 final String cq = thisCol.getColumnName();
                 final Value value = new Value(objToBytes(tuple.get(i), thisType));
-                mutation.put(cf, cq, ts, value);
+                mutation.put(cf, cq, vis, ts, value);
             } else {
                 Map<String, Object> cfMap = (Map<String, Object>) tuple.get(i);
                 for (Entry<String, Object> entry : cfMap.entrySet()) {
                     final String cq = entry.getKey();
                     final Object vobject = entry.getValue();
                     Value value = new Value(objToBytes(vobject, DataType.findType(vobject)));
-                    mutation.put(thisCol.getColumnFamily(), cq, ts, value);
+                    mutation.put(thisCol.getColumnFamily(), cq, vis, ts, value);
                 }
             }
         }
