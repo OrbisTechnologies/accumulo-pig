@@ -23,6 +23,7 @@ import org.apache.pig.LoadCaster;
 import org.apache.pig.ResourceSchema.ResourceFieldSchema;
 import org.apache.pig.data.DataBag;
 import org.apache.pig.data.Tuple;
+import org.joda.time.DateTime;
 
 /**
  *
@@ -69,6 +70,21 @@ public class AccumuloBinaryConverter implements LoadCaster {
     @Override
     public DataBag bytesToBag(byte[] bytes, ResourceFieldSchema rfs)
             throws IOException {
+        throw new UnsupportedOperationException("Not supported yet.");
+    }
+
+    @Override
+    public Boolean bytesToBoolean(byte[] bytes) throws IOException {
+        throw new UnsupportedOperationException("Not supported yet.");
+    }
+
+    @Override
+    public DateTime bytesToDateTime(byte[] bytes) throws IOException {
+        throw new UnsupportedOperationException("Not supported yet.");
+    }
+
+    @Override
+    public Map<String, Object> bytesToMap(byte[] bytes, ResourceFieldSchema rfs) throws IOException {
         throw new UnsupportedOperationException("Not supported yet.");
     }
 }

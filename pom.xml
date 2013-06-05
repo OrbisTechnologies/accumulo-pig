@@ -22,7 +22,7 @@
     <groupId>com.orbis.accumulo</groupId>
     <artifactId>accumulo-pig</artifactId>
     <packaging>jar</packaging>
-    <version>1.4.3+0.8.1-cdh3u4</version>
+    <version>1.4.3+0.11.1</version>
     <name>Accumulo PigStorage</name>
 
     <dependencies>
@@ -44,13 +44,19 @@
         <dependency>
             <groupId>org.apache.pig</groupId>
             <artifactId>pig</artifactId>
-            <version>0.8.1-cdh3u4</version>
+            <version>0.11.1</version>
         </dependency>
         <dependency>
             <groupId>org.apache.accumulo</groupId>
             <artifactId>accumulo-core</artifactId>
             <version>1.4.3</version>
             <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>joda-time</groupId>
+            <artifactId>joda-time</artifactId>
+            <version>2.0</version>
+            <type>jar</type>
         </dependency>
     </dependencies>
 
@@ -81,11 +87,6 @@
             <id>central</id>
             <name>Maven Repository Switchboard</name>
             <url>http://repo1.maven.org/maven2</url>
-        </repository>
-        <repository>
-            <id>cloudera</id>
-            <name>Cloudera Releases</name>
-            <url>https://repository.cloudera.com/content/repositories/releases</url>
         </repository>
     </repositories>
 </project>

@@ -63,6 +63,7 @@ import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.OutputFormat;
 import org.apache.hadoop.mapreduce.RecordReader;
 import org.apache.hadoop.mapreduce.RecordWriter;
+import org.apache.hadoop.thirdparty.guava.common.base.Splitter;
 import org.apache.pig.LoadCaster;
 import org.apache.pig.LoadFunc;
 import org.apache.pig.LoadPushDown;
@@ -146,9 +147,7 @@ public class AccumuloStorage extends LoadFunc
         this(columnList, "");
     }
 
-    public AccumuloStorage(String columnList, String optString)
-            throws ParseException, IOException {
-
+    public AccumuloStorage(String columnList, String optString) throws ParseException, IOException {
         String[] optsArr = optString.split(" ");
         try {
             configuredOptions = parser.parse(validOptions, optsArr);
@@ -535,12 +534,7 @@ public class AccumuloStorage extends LoadFunc
         for (int i = 2; i < tuple.size(); i++) {
             final byte thisType = (fieldSchemas == null) ? DataType.findType(tuple.get(i)) : fieldSchemas[i].getType();
             final ColumnInfo thisCol = columnInfo.get(i - 2);
-            if (!thisCol.isColumnMap()) {
-                final String cf = thisCol.getColumnFamily();
-                final String cq = thisCol.getColumnName();
-                final Value value = new Value(objToBytes(tuple.get(i), thisType));
-                mutation.put(cf, cq, vis, ts, value);
-            } else {
+            if (thisCol.isColumnMap()) {
                 Map<String, Object> cfMap = (Map<String, Object>) tuple.get(i);
                 for (Entry<String, Object> entry : cfMap.entrySet()) {
                     final String cq = entry.getKey();
@@ -548,6 +542,11 @@ public class AccumuloStorage extends LoadFunc
                     Value value = new Value(objToBytes(vobject, DataType.findType(vobject)));
                     mutation.put(thisCol.getColumnFamily(), cq, vis, ts, value);
                 }
+            } else {
+                final String cf = thisCol.getColumnFamily();
+                final String cq = thisCol.getColumnName();
+                final Value value = new Value(objToBytes(tuple.get(i), thisType));
+                mutation.put(cf, cq, vis, ts, value);
             }
         }
 
@@ -591,12 +590,13 @@ public class AccumuloStorage extends LoadFunc
     private List<ColumnInfo> parseColumnList(String columnList,
                                              String delimiter) {
         List<ColumnInfo> colInfo = Lists.newArrayList();
-
         // Default behavior is to allow combinations of spaces and delimiter
         // which defaults to a comma. Setting to not ignore whitespace will
         // include the whitespace in the columns names
-        String[] colNames = columnList.split(delimiter);
-
+        Iterable<String> colNames = Splitter.on(delimiter)
+                .trimResults()
+                .omitEmptyStrings()
+                .split(columnList);
         for (String colName : colNames) {
             colInfo.add(new ColumnInfo(colName));
         }
@@ -662,6 +662,11 @@ public class AccumuloStorage extends LoadFunc
             default:
                 throw new IOException("Unable to find a converter for tuple field " + o);
         }
+    }
+
+    @Override
+    public void cleanupOnSuccess(String string, Job job) throws IOException {
+        // NOP
     }
 
     /**
