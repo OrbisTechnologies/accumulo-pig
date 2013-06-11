@@ -83,6 +83,7 @@ import org.apache.pig.impl.PigContext;
 import org.apache.pig.impl.logicalLayer.FrontendException;
 import org.apache.pig.impl.util.ObjectSerializer;
 import org.apache.pig.impl.util.UDFContext;
+import org.joda.time.DateTime;
 
 public class AccumuloStorage extends LoadFunc
         implements LoadPushDown, OrderedLoadFunc, StoreFuncInterface {
@@ -358,6 +359,11 @@ public class AccumuloStorage extends LoadFunc
         } catch (InterruptedException e) {
             throw new IOException(e);
         }
+    }
+
+    @Override
+    public LoadCaster getLoadCaster() throws IOException {
+        return caster;
     }
 
     @Override
@@ -649,6 +655,10 @@ public class AccumuloStorage extends LoadFunc
                 return localCaster.toBytes((Integer) o);
             case DataType.LONG:
                 return localCaster.toBytes((Long) o);
+            case DataType.BOOLEAN:
+                return localCaster.toBytes((Boolean) o);
+            case DataType.DATETIME:
+                return localCaster.toBytes((DateTime) o);
             // The type conversion here is unchecked.
             // Relying on DataType.findType to do the right thing.
             case DataType.MAP:

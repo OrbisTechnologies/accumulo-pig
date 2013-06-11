@@ -33,27 +33,27 @@ public class AccumuloBinaryConverter implements LoadCaster {
 
     @Override
     public Long bytesToLong(byte[] bytes) throws IOException {
-        throw new UnsupportedOperationException("Not supported yet.");
+        return Long.parseLong(new String(bytes));
     }
 
     @Override
     public Float bytesToFloat(byte[] bytes) throws IOException {
-        throw new UnsupportedOperationException("Not supported yet.");
+        return Float.parseFloat(new String(bytes));
     }
 
     @Override
     public Double bytesToDouble(byte[] bytes) throws IOException {
-        throw new UnsupportedOperationException("Not supported yet.");
+        return Double.parseDouble(new String(bytes));
     }
 
     @Override
     public Integer bytesToInteger(byte[] bytes) throws IOException {
-        throw new UnsupportedOperationException("Not supported yet.");
+        return Integer.parseInt(new String(bytes));
     }
 
     @Override
     public String bytesToCharArray(byte[] bytes) throws IOException {
-        throw new UnsupportedOperationException("Not supported yet.");
+        return new String(bytes);
     }
 
     @Override
@@ -75,7 +75,7 @@ public class AccumuloBinaryConverter implements LoadCaster {
 
     @Override
     public Boolean bytesToBoolean(byte[] bytes) throws IOException {
-        throw new UnsupportedOperationException("Not supported yet.");
+        return Boolean.parseBoolean(new String(bytes));
     }
 
     @Override
