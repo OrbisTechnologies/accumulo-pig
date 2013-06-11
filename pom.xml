@@ -76,14 +76,6 @@
 
     <repositories>
         <repository>
-            <id>orbis</id>
-            <name>Orbis development repository</name>
-            <url>http://artifactory.orbistechnologies.com/artifactory/repo</url>
-            <snapshots>
-                <enabled>true</enabled>
-            </snapshots>
-        </repository>
-        <repository>
             <id>central</id>
             <name>Maven Repository Switchboard</name>
             <url>http://repo1.maven.org/maven2</url>
